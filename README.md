@@ -1,4 +1,4 @@
-# SolaxvT58 battery in NodeRED
+# Solax T58 battery in NodeRED
 NodeRED flow to read Solax T58 Battery details directly from battery module via RS485 serial converter and wirelessly over ESPHome serial stream proxy
 
 Connect RJ45 pin 3 and 6 to last slave T58 battery. Pin 3 -> modbus B-, Pin 6 -> modbus A+. Recommended use of modules with disabled sending data. 
