@@ -1,0 +1,121 @@
+let buffer = context.get('serialBuffer') || Buffer.alloc(0);
+if (msg.payload) {
+    const newChunk = Buffer.isBuffer(msg.payload) ? msg.payload : Buffer.from(msg.payload);
+    buffer = Buffer.concat([buffer, newChunk]);
+}
+
+let rack = flow.get('t58_rack') || {};
+let updated = false;
+
+function initModule(id) {
+    if (!rack[id]) {
+        rack[id] = {
+            info: { voltage: "0.00", soc: 0, current: "0.00", cycles: 0, capacity_wh: 0, total_v_calc: "0.00", temp_pcb: "0.0" },
+            cells: {},
+            temps: {},
+            lastUpdate: ""
+        };
+    }
+}
+
+let pos;
+while ((pos = buffer.indexOf(Buffer.from([13, 10]))) !== -1) {
+    let frame = buffer.slice(0, pos);
+    buffer = buffer.slice(pos + 2);
+    
+    if (frame.length < 5) continue;
+
+    const id = frame[0];
+    const fc = frame[1];
+    const len = frame[2];
+
+    if (id >= 1 && id <= 6 && fc === 0x03) {
+        initModule(id);
+
+        // --- 1. TELEMETRIE NEBO TEPLOTY (len 16) ---
+        if (len === 16 && frame.length >= 19) {
+            let testVal = frame.readInt16BE(3); // Změna na signed podle Javy
+
+            if (testVal === 0) {
+                rack[id].info.voltage = (frame.readUInt16BE(5) / 500).toFixed(2);
+                rack[id].info.current = (frame.readInt16BE(9) / 100).toFixed(2);
+                rack[id].info.soc = Math.floor((frame[8] * 100) / 250);
+                rack[id].info.lastUpdate = new Date().toLocaleTimeString('cs-CZ');
+                updated = true;
+            }
+            else if (testVal > 500 && testVal < 6000) {
+                rack[id].info.temp_pcb = (frame.readInt16BE(3) / 100).toFixed(1);
+                rack[id].temps = {};
+                for (let i = 1; i < 8; i++) {
+                    let tRaw = frame.readInt16BE(3 + i * 2);
+                    if (tRaw !== 0) {
+                        rack[id].temps[`t${i}`] = (tRaw / 100).toFixed(1);
+                    }
+                }
+                updated = true;
+            }
+        }
+
+// --- 2. NAPĚTÍ ČLÁNKŮ (len 18) ---
+        else if (len === 18 && frame.length >= 21) {
+            let firstCellRaw = frame.readInt16BE(3);
+            if (Math.abs(firstCellRaw) > 2000) {
+                
+                // Určení offsetu (0 nebo 9)
+                // Pokud už v c1 něco máme, zkusíme, jestli tento paket patří do c10-c18
+                let offset = 0;
+                
+                // Logika: Pokud už máme uložený článek 1 a tento nový paket má 
+                // buď jiné ID požadavku (vnitřní logika střídače), 
+                // nebo jsme v předchozím kroku zapsali offset 0, dáme teď 9.
+                if (rack[id]._lastOffset === 0) {
+                    offset = 9;
+                } else {
+                    offset = 0;
+                }
+                
+                // Uložíme si, co jsme právě zapsali, pro příští otočku
+                rack[id]._lastOffset = offset;
+
+                for (let i = 0; i < 9; i++) {
+                    let vRaw = frame.readInt16BE(3 + i * 2);
+                    let v = (vRaw / 1000).toFixed(3);
+                    rack[id].cells[`c${i + 1 + offset}`] = v;
+                }
+
+                // Přepočet celkového napětí
+                let total = 0;
+                for (let k in rack[id].cells) {
+                    let val = parseFloat(rack[id].cells[k]);
+                    if (!isNaN(val)) total += val;
+                }
+                
+                rack[id].info.total_v_calc = total.toFixed(2);
+                updated = true;
+            }
+        }
+        
+                
+        // --- 3. KAPACITA, CYKLY A BALANCER (len 10) ---
+        else if (len === 10 && frame.length >= 13) {
+            // Balancer bity (Registr 34 - první 2 bajty dat)
+            let balRaw = frame.readUInt16BE(3);
+            rack[id].balancers = balRaw.toString(2).padStart(18, '0');
+
+            // Kapacita (Registr 36 - bajty 7-8)
+            let rawCap = frame.readInt16BE(7);
+            if (rawCap > 0) rack[id].info.capacity_wh = (rawCap / 10).toFixed(0);
+            
+            // Cykly (Registr 37 - bajty 9-10)
+            rack[id].info.cycles = frame.readInt16BE(9);
+            updated = true;        }
+    }
+}
+
+context.set('serialBuffer', buffer);
+if (updated) {
+    flow.set('t58_rack', rack);
+    msg.payload = rack;
+    return msg;
+}
+return null;
