@@ -1,20 +1,34 @@
-esphome:
+substitutions:
   name: "solax-sniffer"
-  friendly_name: Solax Battery sniffer
+
+esphome:
+  name: ${name}
+  friendly_name: Solax T58 & Chint sniffer
   min_version: 2025.11.0
   name_add_mac_suffix: false
 
 esp32:
-  variant: esp32
+  variant: esp32c3
   framework:
-    type: esp-idf
+    type: arduino
+
+debug:
+  update_interval: 5s
 
 # Enable logging
 logger:
+  level: WARN # Debug generuje příliš mnoho vnitřního provozu
+  baud_rate: 0 # Vypne logování na sériovou linku, pokud není potřeba
 
 # Enable Home Assistant API
-api:
+#api:
+#  reboot_timeout: 0s
 
+mqtt:
+  broker: !secret mqtt # 192.168.0.118
+  topic_prefix: /home/${name}
+
+  
 # Allow Over-The-Air updates
 ota:
 - platform: esphome
@@ -22,18 +36,78 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  power_save_mode: NONE
+
+  ap:
+    ssid: "solax-sniffer"
+    password: !secret wifi_password
+
+web_server:
+  port: 80
+  version: 2
 
 external_components:
   - source: github://oxan/esphome-stream-server
 
+
 uart:
   - id: uart_bus_t58
     #tx_pin: GPIO1
-    rx_pin: GPIO3
+    rx_pin: GPIO5
     baud_rate: 115200
+    rx_buffer_size: 4096
+
 
 stream_server:
   - uart_id: uart_bus_t58
     port: 6638
+    buffer_size: 4096
   
 
+
+
+button:
+  - platform: restart
+    name: "Restart module"
+      
+
+sensor:  
+  - platform: wifi_signal
+    name: "WiFi signal dBm"
+    update_interval: 10s
+    entity_category: diagnostic
+    id: wifi_signal_db
+
+  - platform: copy # Reports the WiFi signal strength in %
+    source_id: wifi_signal_db
+    name: "WiFi Signal"
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+
+  - platform: template
+    name: "Free Heap"
+    lambda: |-
+      return heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    unit_of_measurement: "bytes"
+    state_class: "measurement"
+    entity_category: "diagnostic"
+    update_interval: 10s
+
+text_sensor:
+  - platform: template
+    name: Uptime
+    update_interval: 5s
+    entity_category: diagnostic
+    lambda: |-
+      auto s = millis() / 1000;
+      return str_snprintf("%02d days %02d:%02d:%02d", 16, s / 86400, s / 3600 % 24, s / 60 % 60, s % 60);
+
+  - platform: version
+    name: "Build"
+    entity_category: diagnostic
+
+  - platform: debug
+    reset_reason:
+      name: "Reset Reason"
